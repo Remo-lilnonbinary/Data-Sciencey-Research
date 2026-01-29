@@ -1,0 +1,269 @@
+1. Building a ridge regression estimator
+
+As a starter for ten, run the following code chunk, which includes most of the simulation setup we wrote last week. One subtle difference below is that our X data now has 5 columns, all of which are drawn from a standard normal distribution (i.e. N(0,1)), and the data does not include a column for intercepts (more on this later!)
+
+```{r}
+set.seed(89)
+
+genX <- function(n) {
+  return(
+    data.frame(X1 = rnorm(n,0,1),
+               X2 = rnorm(n,0,1),
+               X3 = rnorm(n,0,1),
+               X4 = rnorm(n,0,1),
+               X5 = rnorm(n,0,1))
+  )
+}
+
+genY <- function(X) {
+  Ylin <- 3*X$X1 + 1*X$X2 - 2*X$X3 + rnorm(nrow(X),0,0.5) 
+  Yp <- 1/(1+exp(-Ylin))
+  Y <- rbinom(nrow(X),1,Yp)
+  return(Y)
+}
+
+predict_row <- function(row, coefficients) {
+  pred_terms <- row*coefficients # get the values of the individual linear terms
+  yhat <- sum(pred_terms) # sum these up (i.e. \beta_0 + \beta_1X_1 + ...
+  return(1/(1+exp(-yhat))) # convert to probabilities
+
+}
+
+# Generate 1000 observations and corresponding labels
+X <- genX(1000)
+y <- genY(X)
+```
+
+Last week we defined a function to calculate the negative log-likelihood -- the loss function for conventional, logistic regression models. Recall from our lecture, however, that the loss function for *ridge regression* is a penalized version of this function. 
+
+Complete the following code to generate a function which calculates the total loss in ridge regression:
+
+```{r}
+NLL <- function(ytrue, yhat) {
+  return(-sum(log(
+    (yhat^ytrue)*((1-yhat)^(1-ytrue))
+  )))
+}
+
+ridgeLoss <- function(ytrue, yhat, coefficients, lambda) {
+  nll <- NLL(ytrue, yhat)
+  l2_penalty <- lambda*sum(coefficients^2)
+  return(nll + l2_penalty)
+}
+```
+
+Next, complete the following function to define a ridge regression fitting algorithm using stochastic gradient descent. The code is very similar to last week, and needs only a few minor changes within the innermost loop:
+
+
+```{r}
+train_ridge <- function(X, y, l_rate, epochs, lambda) {
+  # X = training data
+  # y = true outcomes
+  # l_rate = learning rate
+  # epochs = number of SGD iterations through X
+  # lambda = extent of L2 regularization
+  
+  # Instantiate model with basic guess of 0 for all coefficients 
+  coefs <- rep(0, ncol(X))
+  
+  ### OUR CODE BLOCK FROM BEFORE ###
+  for (b in 1:epochs) {
+    for (i in sample(1:nrow(X))) { # sampling the indices shuffles the order
+      row_vec <- as.numeric(X[i,]) # make row easier to handle
+      
+      yhat_i <- predict_row(row_vec, coefficients = coefs)
+      
+      # for each coefficient, apply update using partial derivative
+      coefs <- sapply(1:length(coefs), function (k) {
+        
+        grad <- (yhat_i - y[i])*row_vec[k]
+        l2_penalty <- 2*lambda*coefs[k]
+        
+        coefs[k] - l_rate*(grad + l2_penalty)
+      }
+      )
+    }
+    
+    # calculate current error
+    yhat <- apply(X, 1, predict_row, coefficients = coefs)
+    loss_epoch <- ridgeLoss(y, yhat, coefs, lambda)
+    
+    # report the error to the user
+    message(
+      paste0(
+        "Iteration ", b ,"/",epochs," | Loss = ", round(loss_epoch,5)
+      )
+    )
+  }
+  
+  return(coefs) # output the final estimates
+}
+```
+
+Finally, we can run our algorithm and compare it to a much more refined algorithm within the `glmnet` package.
+
+Before we do, a couple of notes on `glmnet`:
+  
+  * To extract coefficients from the fit model, we need to use the `coef()` function after training the model
+  * Notice that the lambda value for glmnet is twice that of our custom code. This discrepancy is **not** an error. In fact, the glmnet model's L2 penalty is $0.5*\lambda*||\beta||_2$, so we need to multiply the input lambda by two in order to obtain comparable results to our own algorithm.
+
+```{r}
+library(glmnet)
+
+coef_custom <- train_ridge(X = X, y = y, l_rate = 0.001, lambda = 0.1, epochs = 25)
+
+coef_glmnet <- coef(
+  glmnet(
+    X, y, 
+    family = "binomial", 
+    lambda = 0.2, # notice this is double (see above!)
+    alpha = 0)
+  )
+
+print(coef_custom)
+print(coef_glmnet)
+```
+
+Notice the `glmnet` model output includes an intercept estimate. We did not include this term in our algorithm, as the intercept in a (standardised) ridge regression model is simply the mean value of $y$ in the model space (so with a logistic model, in the log-odds space). We can prove this easily:
+
+```{r}
+# transform the intercept coefficient back to probability space
+1/(1+exp(-coef_glmnet[1]))
+
+# ...which is very similar to the unconditional mean of y
+mean(y)
+```
+
+## 2. Cross-validating our choice of lambda
+
+Recall that, in practice, we want to choose the value of lambda that minimizes our loss. But if we simply by repeatedly fitting models on the same training data, then we may overfit our choice of lambda. We overcome this by implementing cross validation:
+
+  1. Divide our training data into $k$ folds
+  2. For each parameter value:
+    i. For each fold:
+      a) Fit the model on the remaining $k-1$ folds of data
+      b) Estimate the loss on the 
+      
+```{r}
+set.seed(89)
+lambda_vals <- seq(0, 2, by = 0.2)
+lambda_loss <- c()
+
+K <- 10
+
+for (lambda in lambda_vals) {
+  fold_id <- sample(rep(1:K, each = nrow(X)/K))
+  total_loss = 0
+  
+  for (k in 1:K) {
+    
+    val_X <- X[fold_id == k,]
+    train_X <- X[fold_id != k,]
+    
+    val_y <- y[fold_id == k]
+    train_y <- y[fold_id != k]
+    
+    k_mod <- glmnet(
+      train_X, train_y, 
+      family = "binomial", 
+      lambda = lambda,
+      alpha = 0)
+    
+    yhat_k <- predict(k_mod, newx = as.matrix(val_X), type = "response")
+    k_loss <- ridgeLoss(val_y, yhat_k, coef(k_mod)[-1], lambda)
+    
+    total_loss <- total_loss + k_loss
+  }
+  lambda_loss <- append(lambda_loss, mean(total_loss))
+}
+
+print(lambda_loss)
+```
+
+On the basis of these results, what should we set lambda to? Is this surprising?
+
+#### LASSO on applied data
+
+For the final part of this seminar, let's use an applied dataset: the communities and crime dataset, which combines data from the 1990 US census, law enforcement and crime datasets. More information on the data can be found here: https://archive.ics.uci.edu/dataset/183/communities+and+crime 
+
+A formatted version of the dataset is included with this week's seminar materials. Each row of our data is a community within a county within a state. I have removed the state/community identifiers to avoid having to handle categorical data (for now), and have imputed all missing values (more on this soon!)
+
+Let's suppose our task is to predict violence per capita (`ViolentCrimesPerPop`), in a set of communities (not included in our training data).
+
+First, open the data and randomly partition the full dataset into 80% training data, 20% test data. Make sure to split out the outcome vector from the predictors (for both train and test splits).
+
+```{r}
+set.seed(89)
+crime <- read_csv("crime.csv")
+
+train_idx <- sample(1:nrow(crime), 0.8*nrow(crime))
+Xtrain <- crime[train_idx,]
+Xtest <- crime[-train_idx,]
+
+ytrain <- Xtrain$ViolentCrimesPerPop
+ytest <- Xtest$ViolentCrimesPerPop
+
+# quick way to remove same col from multiple data.frames
+Xtrain$ViolentCrimesPerPop <- Xtest$ViolentCrimesPerPop <- NULL 
+```
+
+Next, let's use the inbuilt cross-validation estimator within `glmnet` to identify the optimal lambda value based on our training data, and store this as a scalar variable:
+
+```{r}
+
+lasso_cv <- cv.glmnet(as.matrix(Xtrain), ytrain, alpha = 1)
+
+lambda_min <- lasso_cv$lambda.min
+```
+
+Helpfully, `glmnet` allows us to plot how the coefficient values change depending on the (log) lambda value, which can be helpful to understand how the shrinkage is being applied to the variables in the data:
+
+```{r}
+plot(lasso_cv$glmnet.fit, "lambda")
+```
+
+Next, let's fit the final model using our previously saved lambda value, and then inspect the coefficients. How many coefficients does the model set to zero?
+
+```{r}
+
+# train final mod
+final_mod <- glmnet(as.matrix(Xtrain), ytrain, alpha = 1, lambda = lambda_min)
+
+# get coefficients 
+coef(final_mod)
+
+# how many are non-zero?
+sum(coef(final_mod) == 0)
+
+
+```
+
+Finally, let's use our trained model to predict violent crime rates on our test data (which was not included in the training procedure), and assess the out-of-sample performance using the MSE:
+
+```{r}
+
+# predict test outcomes
+ypred <- predict(final_mod, newx = as.matrix(Xtest))
+
+# calculate the MSE of test outcomes
+test_loss <- mean((ytest - ypred)^2)
+print(test_loss)
+
+```
+
+*Extra*: You might be wondering how much better the LASSO model is than a conventional linear model that includes all the variables. We can assess this by "training" a linear regression model without regularisation, then predict the outcomes on the test data, and then finally compare the test loss:
+
+```{r}
+# train and predict using linear regression
+reg_mod <- lm(ytrain ~ ., data = Xtrain)
+ypred_reg <- predict(reg_mod, newdata = Xtest)
+
+# calculate regression test loss
+reg_loss <- mean((ytest - ypred_reg)^2)
+
+print(reg_loss)
+
+# calculate percentage reduction in the loss
+print(100*(reg_loss-test_loss)/reg_loss)
+
+```
