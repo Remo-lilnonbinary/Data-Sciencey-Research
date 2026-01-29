@@ -1,9 +1,7 @@
-# MY474 -- Seminar 1 (complete solution)
-## Dr Thomas Robinson | WT 2024
+
 
 ## Defining a data and prediction function
 
-In this seminar we will focus on a simple binary classification context, in which we use stochastic gradient descent to estimate coefficient values from a logistic model. 
 
 First, we need to some generate some data.
 
